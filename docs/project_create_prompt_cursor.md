@@ -1,0 +1,5 @@
+Agent, claude 3.7 sonnet
+
+@rule python-ds-fasapi
+
+Create a minimal project  for an AI chatbot app powered by LLM with backend and frontend.  you need database with postgres sql and sqlalchemy as orm. using fastapi for backend apis and vercel AI sdk for frontend. you need to design database to include User, Chat, Message and Config and other possible tables (Data models). There are realations between these tables. As elliet software engineer, you should also consider user management when designing database with security login,  Email Verification, Password Reset,  Login Audit Logging and api authentication. Create FasatAPI backend APIs to matches to these design. Create a simple/minimal frontend using vercel ai sdk for a LLM chatbot UI with user management. Keep everything minimal with necessary design and implmentation.

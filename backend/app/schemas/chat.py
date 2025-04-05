@@ -25,6 +25,10 @@ class MessageUpdate(BaseModel):
     message_metadata: Optional[Dict[str, Any]] = None
 
 
+class MessageResendUpdate(BaseModel):
+    new_content: str = Field(..., description="The new content for the message to be updated")
+
+
 class MessageInDBBase(MessageBase):
     id: UUID4
     chat_id: UUID4

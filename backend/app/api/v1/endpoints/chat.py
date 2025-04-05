@@ -16,6 +16,7 @@ from app.schemas.chat import (
     ChatUpdate,
     Message as MessageSchema,
     MessageCreate,
+    MessageResendUpdate,
     StreamingResponse as StreamingResponseSchema
 )
 from app.services.llm import generate_llm_response
@@ -260,6 +261,115 @@ async def chat_with_llm(
             role="assistant",
             content="",  # Will be updated incrementally
             sequence=next_sequence + 1,
+        )
+        db.add(assistant_message)
+        db.commit()
+        db.refresh(assistant_message)
+        
+        full_response = ""
+        
+        # Stream the response from the LLM
+        async for token in generate_llm_response(message_history):
+            full_response += token
+            
+            # Periodically update the message in the database
+            if len(token) > 10:  # Only update every few tokens to reduce DB load
+                assistant_message.content = full_response
+                db.add(assistant_message)
+                db.commit()
+                
+            # Yield for streaming response
+            yield f"data: {token}\n\n"
+        
+        # Update the final message
+        assistant_message.content = full_response
+        db.add(assistant_message)
+        db.commit()
+        
+        yield f"data: [DONE]\n\n"
+    
+    return StreamingResponse(
+        generate_stream(),
+        media_type="text/event-stream",
+    )
+
+
+@router.put("/{chat_id}/messages/{message_id}", response_class=StreamingResponse)
+async def update_and_resend_message(
+    *,
+    db: Session = Depends(deps.get_db),
+    chat_id: uuid.UUID,
+    message_id: uuid.UUID,
+    update_data: MessageResendUpdate,
+    current_user: User = Depends(deps.get_current_active_user),
+) -> Any:
+    """
+    Update a message and regenerate all subsequent responses.
+    This will delete all messages that come after the modified message.
+    """
+    # Verify chat exists and belongs to user
+    chat = db.query(Chat).filter(
+        Chat.id == chat_id, Chat.user_id == current_user.id
+    ).first()
+    if not chat:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Chat not found",
+        )
+    
+    # Get the message to be updated
+    message = db.query(Message).filter(
+        Message.id == message_id,
+        Message.chat_id == chat_id
+    ).first()
+    
+    if not message:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Message not found",
+        )
+    
+    # Check if message belongs to the user
+    if message.role != "user":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only user messages can be updated",
+        )
+    
+    # Get the sequence number of the message
+    sequence = message.sequence
+    
+    # Delete all subsequent messages
+    db.query(Message).filter(
+        Message.chat_id == chat_id,
+        Message.sequence > sequence
+    ).delete()
+    
+    # Update the message content
+    message.content = update_data.new_content
+    db.add(message)
+    db.commit()
+    db.refresh(message)
+    
+    # Get the updated conversation history
+    messages = (
+        db.query(Message)
+        .filter(Message.chat_id == chat_id)
+        .order_by(Message.sequence)
+        .all()
+    )
+    
+    # Format messages for the LLM
+    message_history = [{"role": msg.role, "content": msg.content} for msg in messages]
+    
+    # Generate the assistant response
+    async def generate_stream():
+        # Create a placeholder for the assistant's response
+        assistant_message = Message(
+            chat_id=chat_id,
+            role="assistant",
+            content="",  # Will be updated incrementally
+            sequence=sequence + 1,
         )
         db.add(assistant_message)
         db.commit()

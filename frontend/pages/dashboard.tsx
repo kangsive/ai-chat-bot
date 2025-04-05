@@ -54,9 +54,17 @@ const DashboardPage: React.FC = () => {
   
   const handleNewChat = async () => {
     try {
-      const newChat = await chatApi.createChat('New Conversation');
+      // Create a chat with a more descriptive title
+      const newChat = await chatApi.createChat(`New Chat ${new Date().toLocaleString()}`);
+      
+      // Add the new chat to the beginning of the chats array
       setChats((prev) => [newChat, ...prev]);
+      
+      // Set the current chat to the new chat
       setCurrentChat(newChat.id);
+      
+      // Show success notification
+      toast.success('New chat created');
     } catch (error) {
       console.error('Error creating chat:', error);
       toast.error('Failed to create new chat');
@@ -136,7 +144,7 @@ const DashboardPage: React.FC = () => {
         {/* Chat Area */}
         <div className="flex-1 flex flex-col">
           {currentChat ? (
-            <ChatUI chatId={currentChat} />
+            <ChatUI key={currentChat} chatId={currentChat} />
           ) : (
             <div className="flex items-center justify-center h-full">
               <div className="text-center">

@@ -17,7 +17,30 @@ interface ChatUIProps {
 
 const ChatUI: React.FC<ChatUIProps> = ({ chatId, initialMessages = [] }) => {
   const [messages, setMessages] = useState<Message[]>(initialMessages);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Fetch chat messages when component mounts or chatId changes
+  useEffect(() => {
+    const fetchMessages = async () => {
+      setIsLoading(true);
+      try {
+        const chatData = await chatApi.getChat(chatId);
+        if (chatData.messages) {
+          setMessages(chatData.messages);
+        } else {
+          setMessages([]);
+        }
+      } catch (error) {
+        console.error('Error fetching chat messages:', error);
+        setMessages([]);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchMessages();
+  }, [chatId]);
 
   // Custom message handler for the Vercel AI SDK
   const handleSubmit = async (message: string) => {
@@ -94,24 +117,39 @@ const ChatUI: React.FC<ChatUIProps> = ({ chatId, initialMessages = [] }) => {
     <div className="flex flex-col h-full">
       {/* Chat messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {messages.map((message) => (
-          <div 
-            key={message.id} 
-            className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
-          >
-            <div 
-              className={`max-w-[80%] rounded-lg p-3 ${
-                message.role === 'user' 
-                  ? 'bg-primary-500 text-white' 
-                  : 'bg-gray-200 text-gray-800'
-              }`}
-            >
-              <ReactMarkdown className="prose">
-                {message.content}
-              </ReactMarkdown>
+        {isLoading ? (
+          <div className="flex items-center justify-center h-full">
+            <div className="text-center">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-500 mx-auto"></div>
+              <p className="mt-2 text-gray-600">Loading messages...</p>
             </div>
           </div>
-        ))}
+        ) : messages.length === 0 ? (
+          <div className="flex items-center justify-center h-full">
+            <div className="text-center text-gray-500">
+              <p>No messages yet. Start the conversation!</p>
+            </div>
+          </div>
+        ) : (
+          messages.map((message) => (
+            <div 
+              key={message.id} 
+              className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
+            >
+              <div 
+                className={`max-w-[80%] rounded-lg p-3 ${
+                  message.role === 'user' 
+                    ? 'bg-primary-500 text-white' 
+                    : 'bg-gray-200 text-gray-800'
+                }`}
+              >
+                <ReactMarkdown className="prose">
+                  {message.content}
+                </ReactMarkdown>
+              </div>
+            </div>
+          ))
+        )}
         <div ref={messagesEndRef} />
       </div>
       

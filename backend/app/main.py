@@ -9,7 +9,12 @@ from app.db.session import engine
 from app.models.base import Base
 from app.db.init_db import init_db
 from app.db.session import SessionLocal
+from app.core.logging_config import configure_logging
 
+# Configure logging for the entire application
+configure_logging()
+
+# Create application logger
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
@@ -17,11 +22,13 @@ app = FastAPI(
     openapi_url=f"{settings.API_V1_STR}/openapi.json"
 )
 
-# Set up CORS
+#Set up CORS
 if settings.BACKEND_CORS_ORIGINS:
+    allow_origins=settings.BACKEND_CORS_ORIGINS
+    logger.info(f"Allow origins: {allow_origins}")
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[str(origin) for origin in settings.BACKEND_CORS_ORIGINS],
+        allow_origins=allow_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

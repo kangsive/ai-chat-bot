@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 8  # 8 days
     
     # CORS settings - origins allowed to make requests
-    BACKEND_CORS_ORIGINS: List[AnyHttpUrl] = []
+    BACKEND_CORS_ORIGINS: List[str] = ["http://localhost:3000"] # allow frontend to make requests
     
     @field_validator("BACKEND_CORS_ORIGINS", mode='before')
     def assemble_cors_origins(cls, v: Union[str, List[str]]) -> Union[List[str], str]:

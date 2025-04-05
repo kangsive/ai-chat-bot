@@ -19,7 +19,7 @@ class Chat(Base):
     
     # Relationships
     user = relationship("User", back_populates="chats")
-    messages = relationship("Message", back_populates="chat", cascade="all, delete-orphan")
+    messages = relationship("Message", back_populates="chat", cascade="all, delete-orphan", order_by="Message.sequence")
 
 
 class Message(Base):

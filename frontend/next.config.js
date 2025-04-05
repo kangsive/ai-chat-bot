@@ -4,7 +4,15 @@ const nextConfig = {
   swcMinify: true,
   images: {
     domains: ['avatars.githubusercontent.com', 'localhost'],
+    remotePatterns: [
+      {
+        protocol: 'https',
+        hostname: '**',
+      },
+    ],
   },
+  // For Docker deployment
+  output: 'standalone',
   async rewrites() {
     return [
       {

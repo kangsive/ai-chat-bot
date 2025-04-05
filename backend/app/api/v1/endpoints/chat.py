@@ -36,6 +36,7 @@ def get_chats(
     chats = (
         db.query(Chat)
         .filter(Chat.user_id == current_user.id)
+        .order_by(Chat.updated_at.desc())  # Order by most recently updated first
         .offset(skip)
         .limit(limit)
         .all()

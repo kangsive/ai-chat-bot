@@ -1,5 +1,6 @@
+'use client';
+
 import React, { useState, useRef, useEffect } from 'react';
-import { useChat } from 'ai/react';
 import { FiSend } from 'react-icons/fi';
 import ReactMarkdown from 'react-markdown';
 import { chatApi } from '../lib/api';
@@ -18,7 +19,9 @@ interface ChatUIProps {
 const ChatUI: React.FC<ChatUIProps> = ({ chatId, initialMessages = [] }) => {
   const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [input, setInput] = useState<string>('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const isInitialFetchRef = useRef<boolean>(true);
 
   // Fetch chat messages when component mounts or chatId changes
   useEffect(() => {
@@ -39,23 +42,35 @@ const ChatUI: React.FC<ChatUIProps> = ({ chatId, initialMessages = [] }) => {
       }
     };
 
+    isInitialFetchRef.current = true;
     fetchMessages();
   }, [chatId]);
 
-  // Custom message handler for the Vercel AI SDK
-  const handleSubmit = async (message: string) => {
+  // Reset scroll behavior when chatId changes
+  useEffect(() => {
+    isInitialFetchRef.current = true;
+  }, [chatId]);
+
+  // Custom message handler
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    if (!input.trim()) return;
+    
     // Add user message to the UI
     const userMessage = {
       id: Date.now().toString(),
       role: 'user' as const,
-      content: message,
+      content: input,
     };
     
     setMessages((prev) => [...prev, userMessage]);
+    setInput('');
+    isInitialFetchRef.current = false; // Mark that we're adding new messages
     
     try {
       // Call our streaming endpoint
-      const response = await chatApi.streamChat(chatId, message);
+      const response = await chatApi.streamChat(chatId, input);
       
       if (!response.ok) {
         throw new Error('Failed to send message');
@@ -67,6 +82,7 @@ const ChatUI: React.FC<ChatUIProps> = ({ chatId, initialMessages = [] }) => {
         ...prev, 
         { id: assistantMessageId, role: 'assistant', content: '' }
       ]);
+      isInitialFetchRef.current = false; // Mark that we're adding assistant message
       
       // Process the stream
       const reader = response.body?.getReader();
@@ -110,13 +126,15 @@ const ChatUI: React.FC<ChatUIProps> = ({ chatId, initialMessages = [] }) => {
   
   // Scroll to bottom when messages change
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+    if (messages.length > 0 && !isInitialFetchRef.current) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages.length]);
 
   return (
     <div className="flex flex-col h-full">
       {/* Chat messages */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+      <div className="flex-1 overflow-y-auto p-4 space-y-4" style={{ maxHeight: 'calc(100vh - 150px)' }}>
         {isLoading ? (
           <div className="flex items-center justify-center h-full">
             <div className="text-center">
@@ -156,20 +174,12 @@ const ChatUI: React.FC<ChatUIProps> = ({ chatId, initialMessages = [] }) => {
       {/* Message input */}
       <div className="border-t border-gray-200 p-4">
         <form 
-          onSubmit={(e) => {
-            e.preventDefault();
-            const form = e.target as HTMLFormElement;
-            const input = form.elements.namedItem('message') as HTMLInputElement;
-            const message = input.value.trim();
-            if (message) {
-              handleSubmit(message);
-              input.value = '';
-            }
-          }}
+          onSubmit={handleSubmit}
           className="flex items-center"
         >
           <input
-            name="message"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
             placeholder="Type your message..."
             className="flex-1 border border-gray-300 rounded-l-lg py-2 px-4 focus:outline-none focus:ring-2 focus:ring-primary-500"
             required

@@ -5,6 +5,10 @@ from typing import Any, Dict, List, Optional, Union
 from pydantic import AnyHttpUrl, EmailStr, Field, PostgresDsn, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from dotenv import load_dotenv
+
+load_dotenv(override=True)
+
 
 class Settings(BaseSettings):
     """Application settings configuration."""
@@ -12,6 +16,7 @@ class Settings(BaseSettings):
     # API settings
     API_V1_STR: str = "/api/v1"
     SECRET_KEY: str = secrets.token_urlsafe(32)
+    
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 8  # 8 days
     
     # CORS settings - origins allowed to make requests
@@ -75,6 +80,14 @@ class Settings(BaseSettings):
     # LLM Configuration
     LLM_MODEL: str = os.getenv("LLM_MODEL", "openai/gpt-3.5-turbo")
     LLM_API_KEY: Optional[str] = os.getenv("LLM_API_KEY")
+    
+    # File storage configuration
+    UPLOAD_DIR: str = os.getenv("UPLOAD_DIR", "/tmp/uploads")
+    MAX_UPLOAD_SIZE: int = int(os.getenv("MAX_UPLOAD_SIZE", "10485760"))  # 10MB default
+    ALLOWED_EXTENSIONS: List[str] = [
+        "pdf", "txt", "doc", "docx", "xls", "xlsx", 
+        "jpg", "jpeg", "png", "gif", "mp3", "mp4"
+    ]
     
     # Project name
     PROJECT_NAME: str = "AI Chatbot"

@@ -38,8 +38,28 @@ class Message(Base):
     
     # Relationships
     chat = relationship("Chat", back_populates="messages")
+    attachments = relationship("Attachment", back_populates="message", cascade="all, delete-orphan")
     
     # Add check constraint for role
     __table_args__ = (
         CheckConstraint(role.in_(["system", "user", "assistant", "tool"]), name="check_message_role"),
-    ) 
+    )
+
+
+class Attachment(Base):
+    """Model for storing file attachment metadata linked to messages."""
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    message_id = Column(UUID(as_uuid=True), ForeignKey("message.id"), nullable=False)
+    
+    # File metadata
+    filename = Column(String(255), nullable=False)
+    file_path = Column(String(512), nullable=False)  # Path or URL to the actual file storage
+    file_type = Column(String(100), nullable=False)  # MIME type or file extension
+    file_size = Column(Integer, nullable=True)  # Size in bytes
+    
+    # Additional metadata for the attachment
+    attachment_metadata = Column(JSONB, nullable=True)
+    
+    # Relationships
+    message = relationship("Message", back_populates="attachments") 

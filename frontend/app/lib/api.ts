@@ -108,26 +108,46 @@ export const chatApi = {
     return response.data;
   },
   
-  createMessage: async (chatId: string, content: string, role: string = 'user') => {
-    const response = await apiClient.post(`/chats/${chatId}/messages`, {
-      chat_id: chatId,
-      content,
-      role,
-      sequence: 0, // Will be set by the backend
-    });
-    return response.data;
-  },
-  
-  // Stream chat
-  streamChat: async (chatId: string, message: string) => {
-    return fetch(`${apiClient.defaults.baseURL}/chats/${chatId}/chat?message_content=${encodeURIComponent(message)}`, {
+  // Unified message API - handles both creating messages and getting LLM responses
+  sendMessage: async (chatId: string, content: string, files?: File[], sequence?: number) => {
+    // Create the message data
+    const messageData = {
+      role: "user",
+      content: content,
+      sequence: sequence || null
+    };
+    
+    // Create form data for the files if they exist
+    const formData = new FormData();
+    
+    // Add the message as a JSON string
+    formData.append('message', JSON.stringify(messageData));
+    
+    // Add files if they exist
+    if (files && files.length > 0) {
+      files.forEach(file => {
+        formData.append('files', file);
+      });
+    }
+    
+    return fetch(`${apiClient.defaults.baseURL}/chats/${chatId}/messages`, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${getToken()}`,
+        'Authorization': `Bearer ${getToken()}`
       },
+      body: formData,
     });
   },
+  
+  // Delete a specific attachment from a message
+  deleteAttachment: async (chatId: string, messageId: string, attachmentId: string) => {
+    return fetch(`${apiClient.defaults.baseURL}/chats/${chatId}/messages/${messageId}/attachments/${attachmentId}`, {
+      method: 'DELETE',
+      headers: {
+        'Authorization': `Bearer ${getToken()}`
+      }
+    });
+  }
 };
 
 // Config API
@@ -141,4 +161,53 @@ export const configApi = {
     const response = await apiClient.put('/config/user', { preferences });
     return response.data;
   },
+};
+
+// Add file upload methods to the API client
+export const fileApi = {
+  /* 
+   * Note on API client usage:
+   * - apiClient (axios) is used for regular JSON API calls with automatic handling of base URL and auth
+   * - fetch is used for file uploads and streaming responses that go through Next.js API routes (/api/v1/...)
+   * - File upload endpoints use relative URLs that are proxied through Next.js to the backend
+   */
+  uploadAttachment: async (chatId: string, messageId: string, file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    
+    const response = await fetch(`/api/v1/chats/${chatId}/messages/${messageId}/attachments`, {
+      method: 'POST',
+      body: formData,
+    });
+    
+    if (!response.ok) {
+      throw new Error(`Failed to upload file: ${response.statusText}`);
+    }
+    
+    return await response.json();
+  },
+  
+  downloadAttachment: async (attachmentId: string) => {
+    return await fetch(`${apiClient.defaults.baseURL}/chats/attachments/${attachmentId}/download`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${getToken()}`
+      }
+    });
+  },
+  
+  deleteAttachment: async (attachmentId: string) => {
+    const response = await fetch(`${apiClient.defaults.baseURL}/chats/attachments/${attachmentId}`, {
+      method: 'DELETE',
+      headers: {
+        'Authorization': `Bearer ${getToken()}`
+      }
+    });
+    
+    if (!response.ok) {
+      throw new Error(`Failed to delete attachment: ${response.statusText}`);
+    }
+    
+    return await response.json();
+  }
 }; 

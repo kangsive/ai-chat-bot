@@ -1,5 +1,5 @@
 import logging
-
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -19,18 +19,23 @@ def init_db(db: Session) -> None:
     # Create a superuser if it doesn't exist
     user = db.query(User).filter(User.email == settings.EMAIL_TEST_USER).first()
     if not user:
-        user = User(
-            email=settings.EMAIL_TEST_USER,
-            username="admin",
-            hashed_password=get_password_hash("password"),  # Change in production!
-            full_name="Admin User",
-            is_superuser=True,
-            is_active=True,
-            is_verified=True,
-        )
-        db.add(user)
-        db.commit()
-        logger.info("Created admin user")
+        try:
+            user = User(
+                email=settings.EMAIL_TEST_USER,
+                username="admin",
+                hashed_password=get_password_hash("password"),  # Change in production!
+                full_name="Admin User",
+                is_superuser=True,
+                is_active=True,
+                is_verified=True,
+            )
+            db.add(user)
+            db.commit()
+            logger.info("Created admin user")
+        except IntegrityError:
+            # Roll back the transaction if there's a constraint violation
+            db.rollback()
+            logger.info("Admin user already exists, skipping creation")
     
     # Add system configurations if they don't exist
     configs = [
@@ -52,10 +57,14 @@ def init_db(db: Session) -> None:
         ).first()
         
         if not config:
-            config = SystemConfig(**config_data)
-            db.add(config)
-            db.commit()
-            logger.info(f"Created system config: {config_data['key']}")
+            try:
+                config = SystemConfig(**config_data)
+                db.add(config)
+                db.commit()
+                logger.info(f"Created system config: {config_data['key']}")
+            except IntegrityError:
+                db.rollback()
+                logger.info(f"System config '{config_data['key']}' already exists, skipping creation")
 
 
 def main() -> None:

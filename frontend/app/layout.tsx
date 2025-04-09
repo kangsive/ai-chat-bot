@@ -24,7 +24,7 @@ export default function RootLayout({
             
             <footer className="bg-white shadow-md py-4 text-center text-gray-500 text-sm">
               <div className="container mx-auto">
-                © {new Date().getFullYear()} AI Chatbot
+                © {new Date().getFullYear().toString()} AI Chatbot
               </div>
             </footer>
             

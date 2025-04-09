@@ -4,6 +4,7 @@ import json
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Response, UploadFile, status, Body
+from fastapi.logger import logger
 from fastapi.responses import StreamingResponse, FileResponse
 from sqlalchemy.orm import Session
 import uuid
@@ -20,7 +21,7 @@ from app.schemas.chat import (
     ChatUpdate,
     Message as MessageSchema,
     MessageCreate,
-    UnifiedMessageRequest,
+    UserMessageRequest,
     StreamingResponse as StreamingResponseSchema
 )
 from app.services.llm import generate_llm_response
@@ -47,6 +48,10 @@ def get_chats(
         .limit(limit)
         .all()
     )
+
+    # Manually convert each chat to dictionary using model_dump
+    chats = [chat.model_dump() for chat in chats]
+  
     return {"chats": chats}
 
 
@@ -68,7 +73,7 @@ def create_chat(
     db.add(chat)
     db.commit()
     db.refresh(chat)
-    return chat
+    return chat.model_dump()
 
 
 @router.get("/{chat_id}", response_model=ChatSchema)
@@ -89,7 +94,7 @@ def get_chat(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Chat not found",
         )
-    return chat
+    return chat.model_dump()
 
 
 @router.put("/{chat_id}", response_model=ChatSchema)
@@ -119,7 +124,7 @@ def update_chat(
     db.add(chat)
     db.commit()
     db.refresh(chat)
-    return chat
+    return chat.model_dump()
 
 
 @router.delete("/{chat_id}")
@@ -169,7 +174,7 @@ async def chat_with_llm(
     # Parse the message JSON
     try:
         message_data = json.loads(message)
-        message_obj = UnifiedMessageRequest(**message_data)
+        message_obj = UserMessageRequest(**message_data)
     except (json.JSONDecodeError, ValueError) as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -209,7 +214,7 @@ async def chat_with_llm(
             )
         
         # Verify it's a user message
-        if existing_message.role != "user":
+        if existing_message.role.value != "user":
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Only user messages can be edited",
@@ -222,8 +227,7 @@ async def chat_with_llm(
         ).delete()
         
         # Update the message content
-        existing_message.content = message_obj.content
-        existing_message.reasoning_content = message_obj.reasoning_content
+        existing_message.content_json = {"text": message_obj.content}
         existing_message.message_metadata = message_obj.message_metadata
         
         db.add(existing_message)
@@ -255,7 +259,7 @@ async def chat_with_llm(
         )
         
         # Format messages for the LLM
-        message_history = [{"role": msg.role, "content": msg.content} for msg in messages]
+        message_history = [msg.to_openai_format() for msg in messages]
         
         # Create assistant message with the next sequence number
         next_sequence = existing_message.sequence + 1
@@ -264,15 +268,17 @@ async def chat_with_llm(
         # Get the next sequence number
         next_sequence = len(messages) + 1
         
-        # Create the user message
-        user_message = Message(
+        # Create the user message using the factory method
+        user_message = Message.create_user_message(
             chat_id=chat_id,
-            role=message_obj.role,
             content=message_obj.content,
-            reasoning_content=message_obj.reasoning_content,
-            sequence=next_sequence,
-            message_metadata=message_obj.message_metadata,
+            sequence=next_sequence
         )
+        
+        # Set additional metadata if provided
+        if message_obj.message_metadata:
+            user_message.message_metadata = message_obj.message_metadata
+            
         db.add(user_message)
         db.commit()
         db.refresh(user_message)
@@ -282,7 +288,7 @@ async def chat_with_llm(
             for file in files:
                 if file.filename:  # Skip empty file uploads
                     file_data = await file_storage_service.save_file(file, user_message.id)
-                    attachment = Attachment( # TODO: avoid duplicate attachments (same files with different id)
+                    attachment = Attachment(
                         message_id=user_message.id,
                         filename=file_data["filename"],
                         file_path=file_data["file_path"],
@@ -300,22 +306,23 @@ async def chat_with_llm(
             db.add(chat)
             db.commit()
         
-        # Format messages for the LLM
-        message_history = [{"role": msg.role, "content": msg.content} for msg in messages]
-        message_history.append({"role": message_obj.role, "content": message_obj.content})
+        # Format messages for the LLM including the newly created message
+        message_history = [msg.to_openai_format() for msg in messages]
+        message_history.append(user_message.to_openai_format())
         
         # Increment for assistant message
         next_sequence += 1
     
     # Generate the assistant response
     async def generate_stream():
-        # Create a placeholder for the assistant's response
-        assistant_message = Message(
+        # Create a placeholder for the assistant's response using the factory method
+        assistant_message = Message.create_assistant_message(
             chat_id=chat_id,
-            role="assistant",
             content="",  # Will be updated incrementally
             sequence=next_sequence,
+            tool_calls=None
         )
+        
         db.add(assistant_message)
         db.commit()
         db.refresh(assistant_message)
@@ -328,7 +335,8 @@ async def chat_with_llm(
             
             # Periodically update the message in the database
             if len(token) > 10:  # Only update every few tokens to reduce DB load
-                assistant_message.content = full_response
+                # Update content_json with new text
+                assistant_message.content_json = {"text": full_response}
                 db.add(assistant_message)
                 db.commit()
                 
@@ -336,7 +344,7 @@ async def chat_with_llm(
             yield f"data: {token}\n\n"
         
         # Update the final message
-        assistant_message.content = full_response
+        assistant_message.content_json = {"text": full_response}
         db.add(assistant_message)
         db.commit()
         
@@ -381,7 +389,7 @@ def get_message_attachments(
     
     # Get all attachments for the message
     attachments = db.query(Attachment).filter(Attachment.message_id == message_id).all()
-    return attachments
+    return [attachment.model_dump() for attachment in attachments]
 
 
 @router.get("/attachments/{attachment_id}/download")
@@ -513,7 +521,7 @@ async def delete_message_attachment(
         )
     
     # Verify it's a user message
-    if message.role != "user":
+    if message.role.value != "user":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Only attachments from user messages can be deleted",

@@ -55,7 +55,7 @@ class MessageResendUpdate(BaseModel):
     new_content: str = Field(..., description="The new content for the message to be updated")
 
 
-class UnifiedMessageRequest(BaseModel):
+class UserMessageRequest(BaseModel):
     role: Literal["user"] = Field("user", description="The role of the message sender (only user supported)")
     content: str = Field(..., description="The content of the message")
     sequence: Optional[int] = Field(None, description="Sequence number for editing existing messages")

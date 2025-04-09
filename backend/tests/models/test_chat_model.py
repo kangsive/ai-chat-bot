@@ -2,7 +2,7 @@ import uuid
 import pytest
 
 from app.models.user import User
-from app.models.chat import Chat, Message
+from app.models.chat import Chat, Message, MessageRole
 
 
 class TestChatModel:
@@ -90,21 +90,21 @@ class TestMessageModel:
         db_session.add(chat)
         db_session.commit()
         
-        # Create messages
-        message1 = Message(
+        # Create messages using factory methods
+        message1 = Message.create_user_message(
             chat_id=chat.id,
-            role="user",
             content="Hello, how are you?",
             sequence=1
         )
         
-        message2 = Message(
+        message2 = Message.create_assistant_message(
             chat_id=chat.id,
-            role="assistant",
             content="I'm doing well, thank you! How can I help you today?",
-            sequence=2,
-            tokens=15
+            sequence=2
         )
+        
+        # Add tokens metadata
+        message2.tokens = 15
         
         db_session.add_all([message1, message2])
         db_session.commit()
@@ -117,14 +117,14 @@ class TestMessageModel:
         assert len(db_messages) == 2
         
         # Check first message
-        assert db_messages[0].role == "user"
-        assert db_messages[0].content == "Hello, how are you?"
+        assert db_messages[0].role == MessageRole.USER
+        assert db_messages[0].text_content == "Hello, how are you?"
         assert db_messages[0].sequence == 1
         assert db_messages[0].tokens is None
         
         # Check second message
-        assert db_messages[1].role == "assistant"
-        assert db_messages[1].content == "I'm doing well, thank you! How can I help you today?"
+        assert db_messages[1].role == MessageRole.ASSISTANT
+        assert db_messages[1].text_content == "I'm doing well, thank you! How can I help you today?"
         assert db_messages[1].sequence == 2
         assert db_messages[1].tokens == 15
         
@@ -151,18 +151,19 @@ class TestMessageModel:
         db_session.commit()
         
         # Create a message with metadata
-        message = Message(
+        message = Message.create_assistant_message(
             chat_id=chat.id,
-            role="assistant",
             content="This is a response with metadata",
-            sequence=1,
-            tokens=8,
-            message_metadata={
-                "model": "gpt-4",
-                "finish_reason": "stop",
-                "processing_time": 1.25
-            }
+            sequence=1
         )
+        
+        # Add tokens and metadata
+        message.tokens = 8
+        message.message_metadata = {
+            "model": "gpt-4",
+            "finish_reason": "stop",
+            "processing_time": 1.25
+        }
         
         db_session.add(message)
         db_session.commit()
@@ -197,16 +198,14 @@ class TestMessageModel:
         db_session.commit()
         
         # Create messages
-        message1 = Message(
+        message1 = Message.create_user_message(
             chat_id=chat.id,
-            role="user",
             content="Message 1",
             sequence=1
         )
         
-        message2 = Message(
+        message2 = Message.create_assistant_message(
             chat_id=chat.id,
-            role="assistant",
             content="Message 2",
             sequence=2
         )

@@ -25,6 +25,16 @@ Excellent! We've successfully created the test database. Now let's check if we c
 psql -h localhost -U postgres -d test_chatbot_db -c "SELECT 1" | cat
 ```
 
+Query the database:
+```
+psql -h localhost -U postgres -d test_chatbot_db -c "SELECT * FROM users;" | cat
+psql -h localhost -U postgres -d ai_chatbot -c "SELECT id, role, content_json FROM message LIMIT 10;" | cat
+```
+
+To remove a database:
+```
+psql -h localhost -U postgres -c "DROP DATABASE test_chatbot_db;" | cat
+```
 
 # Database migration
 Now let's update the tables by running the database migration:
@@ -40,3 +50,31 @@ It seems we need to initialize the Alembic migrations first. Let's do that:
 ```
 cd ai_chatbot_app/backend && alembic init alembic
 ```
+
+
+Reset database:
+```
+# drop alembic_version table if it exists
+psql -h localhost -U postgres -d ai_chatbot -c "DROP TABLE IF EXISTS alembic_version;" | cat
+
+<!-- # reset alembic
+cd ai_chatbot_app/backend && alembic reset -->
+
+# reset database to the base state
+alembic stamp base | cat
+
+# delete all migration files and pycache
+rm -f alembic/versions/*.py
+rm -rf alembic/versions/__pycache__
+
+# create a new initial migration
+alembic revision --autogenerate -m "Initial migration" | cat
+
+# recreate all tables
+alembic upgrade head | cat
+
+# verify all tables are created
+psql -h localhost -U postgres -d ai_chatbot -c "\dt" | cat
+```
+
+

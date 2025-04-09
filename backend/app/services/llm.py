@@ -50,7 +50,11 @@ async def generate_llm_response(
     # Get the last user message for context in our mock response
     last_message = next((m for m in reversed(messages) if m["role"] == "user"), None)
     if last_message:
-        response_text += f"\n\nYou asked: {last_message['content'][:30]}..."
+        if isinstance(last_message['content'], list):
+            last_message_content = last_message['content'][0]['text']
+        else:
+            last_message_content = last_message['content']
+        response_text += f"\n\nYou asked: {last_message_content[:30]}..."
     
     # Simulate streaming by yielding parts of the response with delays
     words = response_text.split()

@@ -227,7 +227,7 @@ async def chat_with_llm(
         ).delete()
         
         # Update the message content
-        existing_message.content_json = {"text": message_obj.content}
+        existing_message._content = {"content": [{"type": "text", "text": message_obj.content}]}
         existing_message.message_metadata = message_obj.message_metadata
         
         db.add(existing_message)
@@ -335,8 +335,8 @@ async def chat_with_llm(
             
             # Periodically update the message in the database
             if len(token) > 10:  # Only update every few tokens to reduce DB load
-                # Update content_json with new text
-                assistant_message.content_json = {"text": full_response}
+                # Update content with new text
+                assistant_message._content = {"content": [{"type": "text", "text": full_response}]}
                 db.add(assistant_message)
                 db.commit()
                 
@@ -344,7 +344,7 @@ async def chat_with_llm(
             yield f"data: {token}\n\n"
         
         # Update the final message
-        assistant_message.content_json = {"text": full_response}
+        assistant_message._content = {"content": [{"type": "text", "text": full_response}]}
         db.add(assistant_message)
         db.commit()
         

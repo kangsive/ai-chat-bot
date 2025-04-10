@@ -1,6 +1,6 @@
 from datetime import datetime
 import uuid
-from typing import Any, Dict, List, Optional, Literal
+from typing import Any, Dict, List, Optional, Literal, Union
 
 from pydantic import BaseModel, Field, UUID4, ConfigDict
 
@@ -34,7 +34,7 @@ class Attachment(AttachmentInDBBase):
 # Message schemas
 class MessageBase(BaseModel):
     role: Literal["system", "user", "assistant", "tool"] = Field(..., description="The role of the message sender (system, user, assistant, tool)")
-    content: str = Field(..., description="The content of the message")
+    content: Union[str, List[Dict[str, Any]]] = Field(..., description="The content of the message (text or structured data)")
     reasoning_content: Optional[str] = Field(None, description="Optional reasoning content for the message")
     sequence: int = Field(..., description="The sequence number of the message in the chat")
     tokens: Optional[int] = Field(None, description="The token count of the message")
@@ -57,7 +57,7 @@ class MessageResendUpdate(BaseModel):
 
 class UserMessageRequest(BaseModel):
     role: Literal["user"] = Field("user", description="The role of the message sender (only user supported)")
-    content: str = Field(..., description="The content of the message")
+    content: Union[str, List[Dict[str, Any]]] = Field(..., description="The content of the message (text or structured data)")
     sequence: Optional[int] = Field(None, description="Sequence number for editing existing messages")
     reasoning_content: Optional[str] = Field(None, description="Optional reasoning content")
     message_metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata for the message")

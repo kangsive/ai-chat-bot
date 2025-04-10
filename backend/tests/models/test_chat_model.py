@@ -118,13 +118,13 @@ class TestMessageModel:
         
         # Check first message
         assert db_messages[0].role == MessageRole.USER
-        assert db_messages[0].text_content == "Hello, how are you?"
+        assert db_messages[0].content == "Hello, how are you?"
         assert db_messages[0].sequence == 1
         assert db_messages[0].tokens is None
         
         # Check second message
         assert db_messages[1].role == MessageRole.ASSISTANT
-        assert db_messages[1].text_content == "I'm doing well, thank you! How can I help you today?"
+        assert db_messages[1].content == "I'm doing well, thank you! How can I help you today?"
         assert db_messages[1].sequence == 2
         assert db_messages[1].tokens == 15
         

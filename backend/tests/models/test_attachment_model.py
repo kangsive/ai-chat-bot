@@ -93,7 +93,7 @@ class TestAttachmentModel:
         
         # Verify relationship to message
         assert db_attachment.message.role == MessageRole.USER
-        assert db_attachment.message.text_content == "Here's an image"
+        assert db_attachment.message.content == "Here's an image"
         
         # Test file_category property
         assert db_attachment.file_category == FileType.IMAGE

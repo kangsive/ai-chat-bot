@@ -110,8 +110,8 @@ class Message(Base):
     role = Column(Enum(MessageRole), nullable=False)
     sequence = Column(Integer, nullable=False)  # Message order in the conversation
     
-    # Common content field (JSON for all types)
-    content_json = Column(JSONB, nullable=True)
+    # Content field (JSON for all types)
+    _content = Column(JSONB, nullable=True, name="content_json")
     
     # Metadata fields
     tokens = Column(Integer, nullable=True)
@@ -126,31 +126,7 @@ class Message(Base):
     def model_dump(self):
         """Convert the model to a dictionary compatible with Pydantic schemas."""
         # Handle different message roles and content types
-        if self.role == MessageRole.TOOL:
-            if self.text_content:
-                content = self.text_content
-            else:
-                structured_content = self.structured_content
-                flattened_content = "\n".join([item.get("text", "") for item in structured_content if item.get("type") == "text"])
-                content = flattened_content
-        elif self.role == MessageRole.USER:
-            if self.text_content:
-                content = self.text_content
-            elif self.structured_content:
-                # Extract text content from structured content for user messages
-                text_items = [item.get("text", "") for item in self.structured_content if item.get("type") == "text"]
-                image_items = [f"[Image: {idx+1}]" for idx, item in enumerate(self.structured_content) if item.get("type") == "image_url"]
-                audio_items = [f"[Audio: {idx+1}]" for idx, item in enumerate(self.structured_content) if item.get("type") == "input_audio"]
-                
-                # Combine all content types
-                all_items = text_items + image_items + audio_items
-                content = "\n".join(all_items)
-            else:
-                content = ""
-        else:
-            content = self.text_content
-
-        content = self.text_content
+        content = self.content
         
         # Ensure content is never None to match Pydantic schema
         if content is None:
@@ -179,14 +155,14 @@ class Message(Base):
             chat_id=chat_id,
             role=MessageRole.SYSTEM,
             sequence=sequence,
-            content_json={"text": content}
+            _content={"content": [{"type": "text", "text": content}]}
         )
     
     @classmethod
     def create_user_message(cls, chat_id: uuid.UUID, content: Union[str, List[Dict[str, Any]]], sequence: int) -> "Message":
         """Create a user message with text or structured content."""
         if isinstance(content, str):
-            content_json = {"text": content}
+            content = [{"type": "text", "text": content}]
         else:
             # Validate structured content
             for item in content:
@@ -194,20 +170,21 @@ class Message(Base):
                     raise ValueError("Each content item must have a 'type' field")
                 if item["type"] not in [t.value for t in ContentType]:
                     raise ValueError(f"Invalid content type: {item['type']}")
-            content_json = {"structured": content}
         
         return cls(
             chat_id=chat_id,
             role=MessageRole.USER,
             sequence=sequence,
-            content_json=content_json
+            _content={"content": content}
         )
     
     @classmethod
     def create_assistant_message(cls, chat_id: uuid.UUID, content: Optional[str], sequence: int, 
                                 tool_calls: Optional[List[Dict[str, Any]]] = None) -> "Message":
         """Create an assistant message with optional tool calls."""
-        content_json = {"text": content}
+        message_content = [{"type": "text", "text": content or ""}]
+        
+        content_data = {"content": message_content}
         
         if tool_calls:
             # Validate tool calls using Pydantic model
@@ -216,13 +193,13 @@ class Message(Base):
                 # Convert to ToolCall model to validate
                 tool_call = ToolCall(**call_data)
                 validated_tool_calls.append(tool_call.model_dump())
-            content_json["tool_calls"] = validated_tool_calls
+            content_data["tool_calls"] = validated_tool_calls
         
         return cls(
             chat_id=chat_id,
             role=MessageRole.ASSISTANT,
             sequence=sequence,
-            content_json=content_json
+            _content=content_data
         )
     
     @classmethod
@@ -231,10 +208,8 @@ class Message(Base):
         if not tool_call_id:
             raise ValueError("Tool message must have a tool_call_id")
         
-        content_json = {"tool_call_id": tool_call_id}
-        
         if isinstance(content, str):
-            content_json["text"] = content
+            message_content = [{"type": "text", "text": content}]
         else:
             # Validate structured content, tool message support only text (not image or audio)
             for item in content:
@@ -242,13 +217,13 @@ class Message(Base):
                     raise ValueError("Each content item must have a 'type' field")
                 if item["type"] != ContentType.TEXT.value:
                     raise ValueError(f"Invalid content type for tool message: {item['type']}")
-            content_json["structured"] = content
+            message_content = content
         
         return cls(
             chat_id=chat_id,
             role=MessageRole.TOOL,
             sequence=sequence,
-            content_json=content_json
+            _content={"content": message_content, "tool_call_id": tool_call_id}
         )
     
     @classmethod
@@ -283,43 +258,39 @@ class Message(Base):
         result = {"role": self.role.value}
         
         if self.role == MessageRole.SYSTEM:
-            result["content"] = self.content_json.get("text", "")
+            # Get content list and extract text
+            content_list = self._content.get("content", [])
+            text_items = [item.get("text", "") for item in content_list if item.get("type") == "text"]
+            result["content"] = " ".join(text_items)
         
         elif self.role == MessageRole.USER:
-            if "structured" in self.content_json:
-                # Handle structured content with attachments
-                structured_content = self.content_json["structured"]
-                
-                # Process any attachments
-                if self.attachments:
-                    content_list = self._process_attachments(structured_content)
-                    result["content"] = content_list
-                else:
-                    result["content"] = structured_content
+            # Handle content with attachments
+            content_list = self._content.get("content", [])
+            
+            # Process any attachments
+            if self.attachments:
+                content_list = self._process_attachments(content_list)
+            
+            # OpenAI API accepts either a string or structured content
+            if len(content_list) == 1 and content_list[0].get("type") == "text":
+                result["content"] = content_list[0].get("text", "")
             else:
-                # Simple text content
-                text_content = self.content_json.get("text", "")
-                
-                # Process any attachments
-                if self.attachments:
-                    content_list = self._process_attachments([{"type": "text", "text": text_content}])
-                    result["content"] = content_list
-                else:
-                    result["content"] = text_content
+                result["content"] = content_list
         
         elif self.role == MessageRole.ASSISTANT:
-            result["content"] = self.content_json.get("text", "")
+            content_list = self._content.get("content", [])
+            text_items = [item.get("text", "") for item in content_list if item.get("type") == "text"]
+            result["content"] = " ".join(text_items)
             
             # Add tool_calls if present
-            if "tool_calls" in self.content_json:
-                result["tool_calls"] = self.content_json["tool_calls"]
+            if "tool_calls" in self._content:
+                result["tool_calls"] = self._content["tool_calls"]
         
         elif self.role == MessageRole.TOOL:
-            if "structured" in self.content_json:
-                result["content"] = self.content_json.get("structured", [])
-            else:
-                result["content"] = self.content_json.get("text", "")
-            result["tool_call_id"] = self.content_json.get("tool_call_id")
+            content_list = self._content.get("content", [])
+            text_items = [item.get("text", "") for item in content_list if item.get("type") == "text"]
+            result["content"] = " ".join(text_items)
+            result["tool_call_id"] = self._content.get("tool_call_id")
         
         return result
     
@@ -372,72 +343,80 @@ class Message(Base):
         
         return content_list
     
-    # Properties for easier access to content
+    # Property for easier access to content
     @property
-    def text_content(self) -> Optional[str]:
-        """Get text content if available."""
-        if not self.content_json:
-            return None
-        return self.content_json.get("text")
-    
-    @property
-    def structured_content(self) -> Optional[List[Dict[str, Any]]]:
-        """Get structured content if available."""
-        if not self.content_json:
-            return None
-        return self.content_json.get("structured")
+    def content(self) -> Union[str, List[Dict[str, Any]]]:
+        """Get content in appropriate format.
+        
+        Returns a plain text string if there's only one text item,
+        otherwise returns the full content list.
+        """
+        if not self._content:
+            return ""
+        
+        # Get the content list from the unified structure
+        content_list = self._content.get("content", [])
+        
+        # If there's just one text item, return it as a string for simplicity
+        if len(content_list) == 1 and content_list[0].get("type") == "text":
+            return content_list[0].get("text", "")
+        
+        return content_list
     
     @property
     def tool_calls(self) -> Optional[List[Dict[str, Any]]]:
         """Get tool calls if available."""
-        if not self.content_json:
+        if not self._content:
             return None
-        return self.content_json.get("tool_calls")
+        return self._content.get("tool_calls")
     
     @property
     def tool_call_id(self) -> Optional[str]:
         """Get tool call ID if available."""
-        if not self.content_json:
+        if not self._content:
             return None
-        return self.content_json.get("tool_call_id")
+        return self._content.get("tool_call_id")
     
-    @validates('content_json')
+    @validates('_content')
     def validate_content(self, key, value):
         """Validate content format based on role."""
         if not value:
             return value
+        
+        # All messages should have a content field with an array
+        if not isinstance(value, dict) or "content" not in value:
+            raise ValueError("Message content must be a dict with a 'content' field")
+        
+        content_list = value["content"]
+        if not isinstance(content_list, list):
+            raise ValueError("Message content must be a list of content items")
             
         # Validate by role
         if self.role == MessageRole.SYSTEM:
-            if "text" not in value:
-                raise ValueError("System message must have text content")
+            # System messages should have at least one text item
+            if not any(item.get("type") == "text" for item in content_list):
+                raise ValueError("System message must have at least one text content item")
                 
         elif self.role == MessageRole.USER:
-            if "text" not in value and "structured" not in value:
-                raise ValueError("User message must have either text or structured content")
-            
-            # Validate structured content if present
-            if "structured" in value:
-                structured = value["structured"]
-                if not isinstance(structured, list):
-                    raise ValueError("Structured content must be a list")
-                for item in structured:
-                    try:
-                        content_type = item.get("type")
-                        if content_type == "text":
-                            TextContent(**item)
-                        elif content_type == "image_url":
-                            ImageUrlContent(**item)
-                        elif content_type == "input_audio":
-                            AudioContent(**item)
-                        else:
-                            raise ValueError(f"Unknown content type: {content_type}")
-                    except Exception as e:
-                        raise ValueError(f"Invalid content item: {str(e)}")
+            # User messages should be a list of valid content items
+            for item in content_list:
+                try:
+                    content_type = item.get("type")
+                    if content_type == "text":
+                        TextContent(**item)
+                    elif content_type == "image_url":
+                        ImageUrlContent(**item)
+                    elif content_type == "input_audio":
+                        AudioContent(**item)
+                    else:
+                        raise ValueError(f"Unknown content type: {content_type}")
+                except Exception as e:
+                    raise ValueError(f"Invalid content item: {str(e)}")
         
         elif self.role == MessageRole.ASSISTANT:
-            if "text" not in value:
-                raise ValueError("Assistant message must have text content")
+            # Assistant messages must have at least one text content item
+            if not any(item.get("type") == "text" for item in content_list):
+                raise ValueError("Assistant message must have at least one text content item")
             
             # Validate tool_calls if present
             if "tool_calls" in value:
@@ -452,32 +431,25 @@ class Message(Base):
                     raise ValueError(f"Invalid tool calls: {str(e)}")
         
         elif self.role == MessageRole.TOOL:
-            # Tool messages must have tool_call_id and either text or structured content
+            # Tool messages must have a tool_call_id
             if "tool_call_id" not in value:
-                raise ValueError("Tool message must have tool_call_id")
-                
-            if "text" not in value and "structured" not in value:
-                raise ValueError("Tool message must have either text or structured content")
-                
-            # Validate structured content if present
-            if "structured" in value:
-                structured = value["structured"]
-                if not isinstance(structured, list):
-                    raise ValueError("Structured content must be a list")
-                for item in structured:
-                    try:
-                        content_type = item.get("type")
-                        if content_type != "text":
-                            raise ValueError(f"Tool message only supports text content type, got: {content_type}")
-                        TextContent(**item)
-                    except Exception as e:
-                        raise ValueError(f"Invalid content item: {str(e)}")
+                raise ValueError("Tool message must have 'tool_call_id' field")
+            
+            # Tool message content must be text only
+            for item in content_list:
+                try:
+                    content_type = item.get("type")
+                    if content_type != "text":
+                        raise ValueError(f"Tool message only supports text content type, got: {content_type}")
+                    TextContent(**item)
+                except Exception as e:
+                    raise ValueError(f"Invalid content item: {str(e)}")
                 
         return value
 
 
 class Attachment(Base):
-    """Model for storing file attachment metadata linked to messages."""
+    """Model representing a file attachment linked to a message."""
     
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     message_id = Column(UUID(as_uuid=True), ForeignKey("message.id"), nullable=False)

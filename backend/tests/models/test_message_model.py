@@ -53,8 +53,11 @@ class TestMessageModel:
         assert db_message.chat_id == chat.id
         assert db_message.role == MessageRole.USER
         assert db_message.sequence == 1
-        assert db_message.text_content == "Hello, how are you?"
-        assert db_message.structured_content is None
+        assert db_message.content == "Hello, how are you?"
+        assert isinstance(db_message._content, dict)
+        assert "content" in db_message._content
+        assert db_message._content["content"][0]["type"] == "text"
+        assert db_message._content["content"][0]["text"] == "Hello, how are you?"
         
         # Verify to_openai_format works
         openai_format = db_message.to_openai_format()
@@ -111,8 +114,8 @@ class TestMessageModel:
         assert db_message.chat_id == chat.id
         assert db_message.role == MessageRole.USER
         assert db_message.sequence == 1
-        assert db_message.text_content is None
-        assert db_message.content_json["structured"] == structured_content
+        assert isinstance(db_message.content, list)
+        assert db_message._content["content"] == structured_content
         
         # Verify to_openai_format works
         openai_format = db_message.to_openai_format()
@@ -141,12 +144,12 @@ class TestMessageModel:
                 chat_id=chat.id,
                 role=MessageRole.USER,
                 sequence=1,
-                content_json={"invalid": "content"}  # Invalid content structure
+                _content={"invalid": "content"}  # Invalid content structure
             )
             db_session.add(message)
             db_session.commit()
             
-        assert "User message must have either text or structured content" in str(excinfo.value)
+        assert "Message content must be a dict with a 'content' field" in str(excinfo.value)
         db_session.rollback()
         
     def test_system_message_creation(self, db_session):
@@ -177,7 +180,7 @@ class TestMessageModel:
         # Verify the message properties
         assert db_message is not None
         assert db_message.role == MessageRole.SYSTEM
-        assert db_message.text_content == "You are a helpful assistant."
+        assert db_message.content == "You are a helpful assistant."
         
         # Verify to_openai_format works
         openai_format = db_message.to_openai_format()
@@ -225,7 +228,7 @@ class TestMessageModel:
         # Verify the message properties
         assert db_message is not None
         assert db_message.role == MessageRole.ASSISTANT
-        assert db_message.text_content == "I'll check the weather for you."
+        assert db_message.content == "I'll check the weather for you."
         assert db_message.tool_calls is not None
         assert len(db_message.tool_calls) == 1
         assert db_message.tool_calls[0]["id"] == "call_abc123"
@@ -267,7 +270,7 @@ class TestMessageModel:
         # Verify the message properties
         assert db_message is not None
         assert db_message.role == MessageRole.TOOL
-        assert db_message.text_content == "The weather in New York is 22°C and sunny."
+        assert db_message.content == "The weather in New York is 22°C and sunny."
         assert db_message.tool_call_id == "call_abc123"
         
         # Verify to_openai_format works
@@ -339,19 +342,19 @@ class TestMessageModel:
         
         # System message
         assert db_messages[0].role == MessageRole.SYSTEM
-        assert db_messages[0].text_content == "You are a helpful assistant."
+        assert db_messages[0].content == "You are a helpful assistant."
         
         # User message
         assert db_messages[1].role == MessageRole.USER
-        assert db_messages[1].text_content == "What's the weather like?"
+        assert db_messages[1].content == "What's the weather like?"
         
         # Assistant message with tool calls
         assert db_messages[2].role == MessageRole.ASSISTANT
-        assert db_messages[2].text_content == "I'll check the weather for you."
+        assert db_messages[2].content == "I'll check the weather for you."
         assert db_messages[2].tool_calls is not None
         assert db_messages[2].tool_calls[0]["function"]["name"] == "get_weather"
         
         # Tool message
         assert db_messages[3].role == MessageRole.TOOL
-        assert db_messages[3].text_content == "The weather in New York is 22°C and sunny."
+        assert db_messages[3].content == "The weather in New York is 22°C and sunny."
         assert db_messages[3].tool_call_id == "call_abc123" 

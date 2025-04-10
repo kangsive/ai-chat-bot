@@ -152,9 +152,10 @@ class TestMessageSchemaValidation:
         assert message_schema.id == message.id
         assert message_schema.chat_id == chat.id
         assert message_schema.role == "tool"
-        # Check that content was flattened correctly
-        assert "Result line 1" in message_schema.content
-        assert "Result line 2" in message_schema.content
+        
+        # Check that the content contains the text from both content items
+        assert "Result line 1" in message_schema.content[0]["text"]
+        assert "Result line 2" in message_schema.content[1]["text"]
         assert message_schema.sequence == 3
     
     def test_message_with_attachments_schema_validation(self, db_session):

@@ -135,7 +135,7 @@ class Message(Base):
         result = {
             "id": self.id,
             "chat_id": self.chat_id,
-            "role": self.role.value,  # Convert Enum to string value
+            "role": self.role,  # Convert Enum to string value
             "sequence": self.sequence,
             "content": content,  # Required string field in Pydantic schema
             "reasoning_content": None,

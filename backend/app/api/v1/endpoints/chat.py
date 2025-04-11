@@ -10,8 +10,9 @@ from sqlalchemy.orm import Session
 import uuid
 
 from app.api import deps
-from app.models.chat import Chat, Message, Attachment
+from app.models.chat import Chat, Message, Attachment, MessageRole
 from app.models.user import User
+from app.crud.chat import chat
 from app.schemas.chat import (
     Attachment as AttachmentSchema,
     AttachmentCreate,
@@ -40,17 +41,10 @@ def get_chats(
     """
     Retrieve all chats for the current user.
     """
-    chats = (
-        db.query(Chat)
-        .filter(Chat.user_id == current_user.id)
-        .order_by(Chat.updated_at.desc())  # Order by most recently updated first
-        .offset(skip)
-        .limit(limit)
-        .all()
-    )
+    chats = chat.get_user_chats(db, user_id=current_user.id, skip=skip, limit=limit)
 
     # Manually convert each chat to dictionary using model_dump
-    chats = [chat.model_dump() for chat in chats]
+    chats = [c.model_dump() for c in chats]
   
     return {"chats": chats}
 
@@ -65,15 +59,8 @@ def create_chat(
     """
     Create new chat.
     """
-    chat = Chat(
-        user_id=current_user.id,
-        title=chat_in.title,
-        model=chat_in.model,
-    )
-    db.add(chat)
-    db.commit()
-    db.refresh(chat)
-    return chat.model_dump()
+    new_chat = chat.create(db, obj_in=chat_in, user_id=current_user.id)
+    return new_chat.model_dump()
 
 
 @router.get("/{chat_id}", response_model=ChatSchema)
@@ -86,15 +73,13 @@ def get_chat(
     """
     Get a specific chat by id.
     """
-    chat = db.query(Chat).filter(
-        Chat.id == chat_id, Chat.user_id == current_user.id
-    ).first()
-    if not chat:
+    chat_obj = chat.get(db, chat_id=chat_id, user_id=current_user.id)
+    if not chat_obj:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Chat not found",
         )
-    return chat.model_dump()
+    return chat_obj.model_dump()
 
 
 @router.put("/{chat_id}", response_model=ChatSchema)
@@ -108,23 +93,15 @@ def update_chat(
     """
     Update a chat.
     """
-    chat = db.query(Chat).filter(
-        Chat.id == chat_id, Chat.user_id == current_user.id
-    ).first()
-    if not chat:
+    chat_obj = chat.get(db, chat_id=chat_id, user_id=current_user.id)
+    if not chat_obj:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Chat not found",
         )
     
-    update_data = chat_in.dict(exclude_unset=True)
-    for field, value in update_data.items():
-        setattr(chat, field, value)
-    
-    db.add(chat)
-    db.commit()
-    db.refresh(chat)
-    return chat.model_dump()
+    updated_chat = chat.update(db, db_obj=chat_obj, obj_in=chat_in)
+    return updated_chat.model_dump()
 
 
 @router.delete("/{chat_id}")
@@ -137,17 +114,13 @@ def delete_chat(
     """
     Delete a chat.
     """
-    chat = db.query(Chat).filter(
-        Chat.id == chat_id, Chat.user_id == current_user.id
-    ).first()
-    if not chat:
+    success = chat.delete(db, chat_id=chat_id, user_id=current_user.id)
+    if not success:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Chat not found",
         )
     
-    db.delete(chat)
-    db.commit()
     return {"message": "Chat deleted successfully"}
 
 
@@ -175,6 +148,7 @@ async def chat_with_llm(
     try:
         message_data = json.loads(message)
         message_obj = UserMessageRequest(**message_data)
+        logger.info(f"Message object: {message_obj}")
     except (json.JSONDecodeError, ValueError) as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -182,30 +156,20 @@ async def chat_with_llm(
         )
     
     # Verify chat exists and belongs to user
-    chat = db.query(Chat).filter(
-        Chat.id == chat_id, Chat.user_id == current_user.id
-    ).first()
-    if not chat:
+    chat_obj = chat.get(db, chat_id=chat_id, user_id=current_user.id)
+    if not chat_obj:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Chat not found",
         )
     
     # Get the conversation history
-    messages = (
-        db.query(Message)
-        .filter(Message.chat_id == chat_id)
-        .order_by(Message.sequence)
-        .all()
-    )
+    messages = chat.get_messages(db, chat_id=chat_id)
     
     # Check if we're editing an existing message (sequence provided)
     if message_obj.sequence is not None:
         # Find the message with the provided sequence
-        existing_message = db.query(Message).filter(
-            Message.chat_id == chat_id,
-            Message.sequence == message_obj.sequence
-        ).first()
+        existing_message = chat.get_message_by_sequence(db, sequence=message_obj.sequence, chat_id=chat_id)
         
         if not existing_message:
             raise HTTPException(
@@ -214,145 +178,128 @@ async def chat_with_llm(
             )
         
         # Verify it's a user message
-        if existing_message.role.value != "user":
+        if existing_message.role != MessageRole.USER:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Only user messages can be edited",
             )
         
         # Delete all subsequent messages
-        db.query(Message).filter(
-            Message.chat_id == chat_id,
-            Message.sequence > existing_message.sequence
-        ).delete()
+        deleted = chat.delete_messages_after_sequence(db, chat_id=chat_id, sequence=existing_message.sequence)
+        logger.info(f"Deleted {deleted} messages after sequence {existing_message.sequence} of chat {chat_id}")
         
         # Update the message content
-        existing_message._content = {"content": [{"type": "text", "text": message_obj.content}]}
-        existing_message.message_metadata = message_obj.message_metadata
-        
-        db.add(existing_message)
-        db.commit()
-        db.refresh(existing_message)
+        chat.update_message(
+            db, 
+            db_obj=existing_message, 
+            content={"content": [{"type": "text", "text": message_obj.content}]},
+            message_metadata=message_obj.message_metadata
+        )
         
         # Handle file attachments - only add new ones
         if files:
             for file in files:
                 if file.filename:  # Skip empty file uploads
                     file_data = await file_storage_service.save_file(file, existing_message.id)
-                    attachment = Attachment(
+                    chat.create_attachment(
+                        db,
                         message_id=existing_message.id,
                         filename=file_data["filename"],
                         file_path=file_data["file_path"],
                         file_type=file_data["file_type"],
                         file_size=file_data["file_size"],
                     )
-                    db.add(attachment)
-            db.commit()
-            db.refresh(existing_message)
         
-        # Get the updated conversation history
-        messages = (
-            db.query(Message)
-            .filter(Message.chat_id == chat_id)
-            .order_by(Message.sequence)
-            .all()
-        )
-        
-        # Format messages for the LLM
-        message_history = [msg.to_openai_format() for msg in messages]
-        
-        # Create assistant message with the next sequence number
-        next_sequence = existing_message.sequence + 1
+        # Use the existing message
+        user_message = existing_message
     else:
-        # Creating a new message
+        # This is a new message, create it
+        
         # Get the next sequence number
         next_sequence = len(messages) + 1
         
-        # Create the user message using the factory method
-        user_message = Message.create_user_message(
-            chat_id=chat_id,
-            content=message_obj.content,
-            sequence=next_sequence
+        # Create the user message
+        user_message = chat.create_message(
+            db,
+            obj_in=MessageCreate(
+                role=MessageRole.USER,
+                content=[{"type": "text", "text": message_obj.content}],
+                sequence=next_sequence,
+                message_metadata=message_obj.message_metadata
+            ),
+            chat_id=chat_id
         )
-        
-        # Set additional metadata if provided
-        if message_obj.message_metadata:
-            user_message.message_metadata = message_obj.message_metadata
-            
-        db.add(user_message)
-        db.commit()
-        db.refresh(user_message)
         
         # Handle file attachments
         if files:
             for file in files:
                 if file.filename:  # Skip empty file uploads
                     file_data = await file_storage_service.save_file(file, user_message.id)
-                    attachment = Attachment(
+                    chat.create_attachment(
+                        db,
                         message_id=user_message.id,
                         filename=file_data["filename"],
                         file_path=file_data["file_path"],
                         file_type=file_data["file_type"],
                         file_size=file_data["file_size"],
                     )
-                    db.add(attachment)
-            db.commit()
-            db.refresh(user_message)
-        
-        # Update chat title if it's the first user message
-        if next_sequence == 1 and not chat.title:
-            title = message_obj.content[:30] + ("..." if len(message_obj.content) > 30 else "")
-            chat.title = title
-            db.add(chat)
-            db.commit()
-        
-        # Format messages for the LLM including the newly created message
-        message_history = [msg.to_openai_format() for msg in messages]
-        message_history.append(user_message.to_openai_format())
-        
-        # Increment for assistant message
-        next_sequence += 1
     
-    # Generate the assistant response
+    # Update the chat's updated_at timestamp
+    chat.update(db, db_obj=chat_obj, obj_in={"title": chat_obj.title})
+    
+    # Prepare for assistant's response (next sequence)
+    assistant_sequence = user_message.sequence + 1
+    
+    # Get updated conversation history
+    updated_messages = chat.get_messages(db, chat_id=chat_id)
+    
+    # Format db messages to openai messages
+    formatted_messages = [msg.to_openai_format() for msg in updated_messages]
+    
+    # Create a function to generate and stream the response
     async def generate_stream():
-        # Create a placeholder for the assistant's response using the factory method
-        assistant_message = Message.create_assistant_message(
-            chat_id=chat_id,
-            content="",  # Will be updated incrementally
-            sequence=next_sequence,
-            tool_calls=None
+        # Create a placeholder for the assistant's response using the CRUD function
+        assistant_message = chat.create_message(
+            db,
+            obj_in=MessageCreate(
+                role=MessageRole.ASSISTANT,
+                content=[{"type": "text", "text": ""}],
+                sequence=assistant_sequence
+            ),
+            chat_id=chat_id
         )
         
-        db.add(assistant_message)
-        db.commit()
-        db.refresh(assistant_message)
+        content_so_far = ""
         
-        full_response = ""
-        
-        # Stream the response from the LLM
-        async for token in generate_llm_response(message_history):
-            full_response += token
+        # Pass the formatted messages and model to the LLM service
+        async for token in generate_llm_response(formatted_messages, chat_obj.model):
+            content_so_far += token
             
-            # Periodically update the message in the database
-            if len(token) > 10:  # Only update every few tokens to reduce DB load
-                # Update content with new text
-                assistant_message._content = {"content": [{"type": "text", "text": full_response}]}
-                db.add(assistant_message)
-                db.commit()
-                
-            # Yield for streaming response
+            # Update the message content in the database periodically using the CRUD function
+            chat.update_assistant_message(
+                db, 
+                message_id=assistant_message.id, 
+                content=content_so_far
+            )
+            
+            # Stream the token to the client
             yield f"data: {token}\n\n"
         
-        # Update the final message
-        assistant_message._content = {"content": [{"type": "text", "text": full_response}]}
-        db.add(assistant_message)
-        db.commit()
+        # Final update to mark completion using the CRUD function
+        chat.update_assistant_message(
+            db, 
+            message_id=assistant_message.id, 
+            content=content_so_far,
+            is_complete=True
+        )
         
+        # Send completion signal
         yield f"data: [DONE]\n\n"
     
+    # Return the streaming response with the correct media type
     return StreamingResponse(
         generate_stream(),
-        media_type="text/event-stream",
+        media_type="text/event-stream"
     )
 
 
@@ -368,28 +315,24 @@ def get_message_attachments(
     Get all attachments for a specific message.
     """
     # Verify chat exists and belongs to user
-    chat = db.query(Chat).filter(
-        Chat.id == chat_id, Chat.user_id == current_user.id
-    ).first()
-    if not chat:
+    chat_obj = chat.get(db, chat_id=chat_id, user_id=current_user.id)
+    if not chat_obj:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Chat not found",
         )
     
-    # Verify message exists and belongs to chat
-    message = db.query(Message).filter(
-        Message.id == message_id, Message.chat_id == chat_id
-    ).first()
+    # Verify message exists and belongs to the chat
+    message = chat.get_message(db, message_id=message_id, chat_id=chat_id)
     if not message:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Message not found",
         )
     
-    # Get all attachments for the message
-    attachments = db.query(Attachment).filter(Attachment.message_id == message_id).all()
-    return [attachment.model_dump() for attachment in attachments]
+    # Get attachments
+    attachments = chat.get_attachments(db, message_id=message_id)
+    return attachments
 
 
 @router.get("/attachments/{attachment_id}/download")
@@ -400,17 +343,18 @@ def download_attachment(
     current_user: User = Depends(deps.get_current_active_user),
 ) -> Any:
     """
-    Download a specific file attachment.
+    Download an attachment.
     """
     # Get the attachment
-    attachment = db.query(Attachment).filter(Attachment.id == attachment_id).first()
+    attachment = chat.get_attachment(db, attachment_id=attachment_id)
     if not attachment:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Attachment not found",
         )
     
-    # Verify user has access to this attachment
+    # Verify the user has access to this attachment
+    # This is done by checking if the message's chat belongs to the user
     message = db.query(Message).filter(Message.id == attachment.message_id).first()
     if not message:
         raise HTTPException(
@@ -418,27 +362,25 @@ def download_attachment(
             detail="Message not found",
         )
     
-    chat = db.query(Chat).filter(
-        Chat.id == message.chat_id, Chat.user_id == current_user.id
-    ).first()
-    if not chat:
+    chat_obj = chat.get(db, chat_id=message.chat_id, user_id=current_user.id)
+    if not chat_obj:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied",
+            detail="Not authorized to access this attachment",
         )
     
-    file_path = attachment.file_path
-    if not os.path.exists(file_path):
+    # Check if the file exists
+    if not file_storage_service.is_file_exists(attachment.file_path):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="File not found on server",
+            detail="File not found",
         )
     
     # Return the file
     return FileResponse(
-        path=file_path, 
+        path=attachment.file_path,
         filename=attachment.filename,
-        media_type=attachment.file_type
+        media_type=attachment.file_type,
     )
 
 
@@ -450,17 +392,18 @@ def delete_attachment(
     current_user: User = Depends(deps.get_current_active_user),
 ) -> Any:
     """
-    Delete a specific file attachment.
+    Delete an attachment.
     """
     # Get the attachment
-    attachment = db.query(Attachment).filter(Attachment.id == attachment_id).first()
+    attachment = chat.get_attachment(db, attachment_id=attachment_id)
     if not attachment:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Attachment not found",
         )
     
-    # Verify user has access to this attachment
+    # Verify the user has access to this attachment
+    # This is done by checking if the message's chat belongs to the user
     message = db.query(Message).filter(Message.id == attachment.message_id).first()
     if not message:
         raise HTTPException(
@@ -468,21 +411,18 @@ def delete_attachment(
             detail="Message not found",
         )
     
-    chat = db.query(Chat).filter(
-        Chat.id == message.chat_id, Chat.user_id == current_user.id
-    ).first()
-    if not chat:
+    chat_obj = chat.get(db, chat_id=message.chat_id, user_id=current_user.id)
+    if not chat_obj:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied",
+            detail="Not authorized to delete this attachment",
         )
     
     # Delete the file from storage
     file_storage_service.delete_file(attachment.file_path)
     
-    # Delete the database record
-    db.delete(attachment)
-    db.commit()
+    # Delete the attachment from the database
+    success = chat.delete_attachment(db, attachment_id=attachment_id)
     
     return {"message": "Attachment deleted successfully"}
 
@@ -501,39 +441,32 @@ async def delete_message_attachment(
     This endpoint allows the frontend to directly manage attachments.
     """
     # Verify chat exists and belongs to user
-    chat = db.query(Chat).filter(
-        Chat.id == chat_id, Chat.user_id == current_user.id
-    ).first()
-    if not chat:
+    chat_obj = chat.get(db, chat_id=chat_id, user_id=current_user.id)
+    if not chat_obj:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Chat not found",
         )
     
-    # Verify message exists and belongs to chat
-    message = db.query(Message).filter(
-        Message.id == message_id, Message.chat_id == chat_id
-    ).first()
+    # Verify message exists and belongs to the chat
+    message = chat.get_message(db, message_id=message_id, chat_id=chat_id)
     if not message:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Message not found",
         )
     
-    # Verify it's a user message
-    if message.role.value != "user":
+    # Get the attachment
+    attachment = chat.get_attachment(db, attachment_id=attachment_id)
+    if not attachment or attachment.message_id != message_id:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only attachments from user messages can be deleted",
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Attachment not found",
         )
     
-    # Find and delete the attachment
-    attachment = db.query(Attachment).filter(
-        Attachment.id == attachment_id, 
-        Attachment.message_id == message_id
-    ).first()
-    
-    if not attachment:
+    # Delete the database record
+    success = chat.delete_attachment(db, attachment_id=attachment_id)
+    if not success:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Attachment not found",
@@ -541,9 +474,5 @@ async def delete_message_attachment(
     
     # Delete the file from storage
     file_storage_service.delete_file(attachment.file_path)
-    
-    # Delete the database record
-    db.delete(attachment)
-    db.commit()
     
     return {"message": "Attachment deleted successfully"} 

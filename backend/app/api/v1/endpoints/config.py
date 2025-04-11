@@ -7,6 +7,7 @@ import uuid
 from app.api import deps
 from app.models.config import SystemConfig, UserConfig
 from app.models.user import User
+from app.crud.config import system_config, user_config
 from app.schemas.config import (
     SystemConfig as SystemConfigSchema,
     SystemConfigCreate,
@@ -29,18 +30,7 @@ def get_user_config(
     """
     Get the current user's config.
     """
-    config = db.query(UserConfig).filter(UserConfig.user_id == current_user.id).first()
-    
-    if not config:
-        # Create default config if none exists
-        config = UserConfig(
-            user_id=current_user.id,
-            preferences={},
-        )
-        db.add(config)
-        db.commit()
-        db.refresh(config)
-    
+    config = user_config.get_or_create(db, user_id=current_user.id)
     return config
 
 
@@ -54,28 +44,16 @@ def update_user_config(
     """
     Update the current user's config.
     """
-    config = db.query(UserConfig).filter(UserConfig.user_id == current_user.id).first()
+    config = user_config.get_by_user_id(db, user_id=current_user.id)
     
     if not config:
         # Create config if none exists
-        config = UserConfig(
-            user_id=current_user.id,
-            preferences=config_in.preferences,
-        )
-        db.add(config)
-        db.commit()
-        db.refresh(config)
+        config = user_config.create(db, user_id=current_user.id, preferences=config_in.preferences)
         return config
     
     # Update existing config
-    update_data = config_in.dict(exclude_unset=True)
-    for field, value in update_data.items():
-        setattr(config, field, value)
-    
-    db.add(config)
-    db.commit()
-    db.refresh(config)
-    return config
+    updated_config = user_config.update(db, db_obj=config, obj_in=config_in)
+    return updated_config
 
 
 # System config endpoints - Admin only
@@ -89,7 +67,7 @@ def get_system_configs(
     """
     Get all system configs.
     """
-    configs = db.query(SystemConfig).offset(skip).limit(limit).all()
+    configs = system_config.get_all(db, skip=skip, limit=limit)
     return {"configs": configs}
 
 
@@ -104,21 +82,14 @@ def create_system_config(
     Create new system config.
     """
     # Check if config with same key exists
-    config = db.query(SystemConfig).filter(SystemConfig.key == config_in.key).first()
-    if config:
+    existing_config = system_config.get_by_key(db, key=config_in.key)
+    if existing_config:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Config with key '{config_in.key}' already exists",
         )
     
-    config = SystemConfig(
-        key=config_in.key,
-        value=config_in.value,
-        description=config_in.description,
-    )
-    db.add(config)
-    db.commit()
-    db.refresh(config)
+    config = system_config.create(db, obj_in=config_in)
     return config
 
 
@@ -132,7 +103,7 @@ def get_system_config(
     """
     Get a specific system config by key.
     """
-    config = db.query(SystemConfig).filter(SystemConfig.key == key).first()
+    config = system_config.get_by_key(db, key=key)
     if not config:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -152,21 +123,15 @@ def update_system_config(
     """
     Update a system config.
     """
-    config = db.query(SystemConfig).filter(SystemConfig.key == key).first()
+    config = system_config.get_by_key(db, key=key)
     if not config:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Config not found",
         )
     
-    update_data = config_in.dict(exclude_unset=True)
-    for field, value in update_data.items():
-        setattr(config, field, value)
-    
-    db.add(config)
-    db.commit()
-    db.refresh(config)
-    return config
+    updated_config = system_config.update(db, db_obj=config, obj_in=config_in)
+    return updated_config
 
 
 @router.delete("/system/{key}")
@@ -179,13 +144,12 @@ def delete_system_config(
     """
     Delete a system config.
     """
-    config = db.query(SystemConfig).filter(SystemConfig.key == key).first()
+    config = system_config.get_by_key(db, key=key)
     if not config:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Config not found",
         )
     
-    db.delete(config)
-    db.commit()
+    system_config.delete(db, key=key)
     return {"message": "Config deleted successfully"} 

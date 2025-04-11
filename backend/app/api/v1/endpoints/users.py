@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.api import deps
 from app.core.security import get_password_hash, verify_password, create_access_token
 from app.models.user import User, LoginAudit, VerificationToken, PasswordResetToken
+from app.crud.user import user
 from app.schemas.user import (
     User as UserSchema,
     UserCreate,
@@ -32,36 +33,18 @@ def create_user(
     Create a new user.
     """
     # Check if user with same email or username exists
-    user = db.query(User).filter(
-        (User.email == user_in.email) | (User.username == user_in.username)
-    ).first()
-    if user:
+    existing_user = user.get_by_email_or_username(db, email=user_in.email, username=user_in.username)
+    if existing_user:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="A user with this email or username already exists."
         )
     
     # Create new user
-    db_user = User(
-        email=user_in.email,
-        username=user_in.username,
-        hashed_password=get_password_hash(user_in.password),
-        full_name=user_in.full_name,
-        is_active=True,
-        is_superuser=False,
-        is_verified=False,
-    )
-    db.add(db_user)
-    db.commit()
-    db.refresh(db_user)
+    db_user = user.create(db, obj_in=user_in)
     
     # Generate verification token (would send email in production)
-    verification_token = VerificationToken(
-        token=str(uuid.uuid4()),
-        user_id=db_user.id,
-    )
-    db.add(verification_token)
-    db.commit()
+    verification_token = user.create_verification_token(db, user_id=db_user.id)
     
     return db_user
 
@@ -76,27 +59,20 @@ def login(
     """
     OAuth2 compatible token login, get an access token for future requests.
     """
-    # Check if user exists
-    user = db.query(User).filter(
-        (User.email == form_data.username) | (User.username == form_data.username)
-    ).first()
+    # Authenticate user
+    db_user = user.authenticate(db, username_or_email=form_data.username, password=form_data.password)
     
-    login_success = False
-    
-    if user and verify_password(form_data.password, user.hashed_password):
-        login_success = True
-        # Create access token
-        access_token = create_access_token(subject=str(user.id))
+    login_success = db_user is not None
+    user_id = db_user.id if db_user else uuid.uuid4()
     
     # Log the login attempt
-    login_audit = LoginAudit(
-        user_id=user.id if user else uuid.uuid4(),  # Use random ID if user not found
+    user.create_login_audit(
+        db, 
+        user_id=user_id,
         ip_address=client_ip,
         user_agent=user_agent,
-        success=login_success,
+        success=login_success
     )
-    db.add(login_audit)
-    db.commit()
     
     if not login_success:
         raise HTTPException(
@@ -105,11 +81,14 @@ def login(
             headers={"WWW-Authenticate": "Bearer"},
         )
     
-    if not user.is_active:
+    if not user.is_active(db_user):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, 
             detail="Inactive user"
         )
+    
+    # Create access token
+    access_token = create_access_token(subject=str(db_user.id))
     
     return {
         "access_token": access_token,
@@ -139,7 +118,7 @@ def update_user_me(
     """
     if user_in.username and user_in.username != current_user.username:
         # Check if username is already taken
-        existing_user = db.query(User).filter(User.username == user_in.username).first()
+        existing_user = user.get_by_email_or_username(db, username=user_in.username)
         if existing_user:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -148,27 +127,17 @@ def update_user_me(
     
     if user_in.email and user_in.email != current_user.email:
         # Check if email is already taken
-        existing_user = db.query(User).filter(User.email == user_in.email).first()
+        existing_user = user.get_by_email_or_username(db, email=user_in.email)
         if existing_user:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Email already registered"
             )
     
-    user_data = user_in.dict(exclude_unset=True)
+    # Update user
+    updated_user = user.update(db, db_obj=current_user, obj_in=user_in)
     
-    if user_in.password:
-        user_data["hashed_password"] = get_password_hash(user_in.password)
-        del user_data["password"]
-    
-    for field, value in user_data.items():
-        setattr(current_user, field, value)
-    
-    db.add(current_user)
-    db.commit()
-    db.refresh(current_user)
-    
-    return current_user
+    return updated_user
 
 
 @router.post("/verify-email", response_model=UserSchema)
@@ -180,9 +149,7 @@ def verify_email(
     """
     Verify a user's email with token.
     """
-    token = db.query(VerificationToken).filter(
-        VerificationToken.token == email_verification.token
-    ).first()
+    token = user.get_verification_token(db, token=email_verification.token)
     
     if not token:
         raise HTTPException(
@@ -190,19 +157,17 @@ def verify_email(
             detail="Invalid or expired token"
         )
     
-    user = db.query(User).filter(User.id == token.user_id).first()
-    if not user:
+    db_user = db.query(User).filter(User.id == token.user_id).first()
+    if not db_user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found"
         )
     
-    user.is_verified = True
-    db.delete(token)  # Remove the used token
-    db.commit()
-    db.refresh(user)
+    # Verify user
+    verified_user = user.verify_user(db, user=db_user, token=token)
     
-    return user
+    return verified_user
 
 
 @router.post("/reset-password")
@@ -214,22 +179,14 @@ def request_password_reset(
     """
     Request a password reset.
     """
-    user = db.query(User).filter(User.email == password_reset.email).first()
+    db_user = user.get_by_email_or_username(db, email=password_reset.email)
     
-    if not user:
+    if not db_user:
         # Don't reveal that the user doesn't exist
         return {"message": "If the email exists, a reset link will be sent"}
     
-    # Delete any existing reset tokens for the user
-    db.query(PasswordResetToken).filter(PasswordResetToken.user_id == user.id).delete()
-    
-    # Create new reset token
-    reset_token = PasswordResetToken(
-        token=str(uuid.uuid4()),
-        user_id=user.id,
-    )
-    db.add(reset_token)
-    db.commit()
+    # Create reset token
+    reset_token = user.create_password_reset_token(db, user_id=db_user.id)
     
     # In production, would send an email with the reset link
     
@@ -245,9 +202,7 @@ def confirm_password_reset(
     """
     Reset a user's password using a token.
     """
-    token = db.query(PasswordResetToken).filter(
-        PasswordResetToken.token == password_reset.token
-    ).first()
+    token = user.get_password_reset_token(db, token=password_reset.token)
     
     if not token:
         raise HTTPException(
@@ -255,16 +210,14 @@ def confirm_password_reset(
             detail="Invalid or expired token"
         )
     
-    user = db.query(User).filter(User.id == token.user_id).first()
-    if not user:
+    db_user = db.query(User).filter(User.id == token.user_id).first()
+    if not db_user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found"
         )
     
-    user.hashed_password = get_password_hash(password_reset.new_password)
-    db.delete(token)  # Remove the used token
-    db.commit()
-    db.refresh(user)
+    # Reset password
+    updated_user = user.reset_password(db, user=db_user, token=token, new_password=password_reset.new_password)
     
-    return {"message": "Password has been reset successfully"} 
+    return {"message": "Password reset successfully"} 

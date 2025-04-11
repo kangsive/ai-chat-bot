@@ -1,11 +1,12 @@
 import asyncio
-from typing import Any, Dict, List, AsyncGenerator
+from typing import Any, Dict, List, AsyncGenerator, Optional
 
 from app.core.config import settings
 
 
 async def generate_llm_response(
-    messages: List[Dict[str, str]]
+    messages: List[Dict[str, str]],
+    model: Optional[str] = None
 ) -> AsyncGenerator[str, None]:
     """
     Generate a response from the LLM.
@@ -15,10 +16,14 @@ async def generate_llm_response(
     
     Args:
         messages: A list of message dictionaries with 'role' and 'content'
+        model: Optional model name to use for generation (defaults to settings.LLM_MODEL)
         
     Yields:
         Tokens of the generated response
     """
+    # Use the provided model or fall back to default
+    model_to_use = model or settings.LLM_MODEL
+    
     # Simple mock response generator
     # In a real app, replace with actual LLM API call
     
@@ -32,7 +37,7 @@ async def generate_llm_response(
     #             "Content-Type": "application/json"
     #         },
     #         json={
-    #             "model": settings.LLM_MODEL,
+    #             "model": model_to_use,
     #             "messages": messages,
     #             "stream": True
     #         },
@@ -45,7 +50,7 @@ async def generate_llm_response(
     #                 yield token
     
     # Mock response
-    response_text = "This is a simulated response from the AI. In a real implementation, this would be an actual response from an LLM API like OpenAI, Anthropic, or a local model."
+    response_text = f"This is a simulated response from the AI using model: {model_to_use}. In a real implementation, this would be an actual response from an LLM API like OpenAI, Anthropic, or a local model."
     
     # Get the last user message for context in our mock response
     last_message = next((m for m in reversed(messages) if m["role"] == "user"), None)

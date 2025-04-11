@@ -4,6 +4,8 @@ from typing import Any, Dict, List, Optional, Literal, Union
 
 from pydantic import BaseModel, Field, UUID4, ConfigDict
 
+from app.models.chat import MessageRole
+
 
 # Attachment schemas
 class AttachmentBase(BaseModel):
@@ -33,7 +35,7 @@ class Attachment(AttachmentInDBBase):
 
 # Message schemas
 class MessageBase(BaseModel):
-    role: Literal["system", "user", "assistant", "tool"] = Field(..., description="The role of the message sender (system, user, assistant, tool)")
+    role: MessageRole = Field(..., description="The role of the message sender (system, user, assistant, tool)")
     content: Union[str, List[Dict[str, Any]]] = Field(..., description="The content of the message (text or structured data)")
     reasoning_content: Optional[str] = Field(None, description="Optional reasoning content for the message")
     sequence: int = Field(..., description="The sequence number of the message in the chat")
@@ -56,7 +58,7 @@ class MessageResendUpdate(BaseModel):
 
 
 class UserMessageRequest(BaseModel):
-    role: Literal["user"] = Field("user", description="The role of the message sender (only user supported)")
+    role: MessageRole = Field(MessageRole.USER, description="The role of the message sender (only user supported)")
     content: Union[str, List[Dict[str, Any]]] = Field(..., description="The content of the message (text or structured data)")
     sequence: Optional[int] = Field(None, description="Sequence number for editing existing messages")
     reasoning_content: Optional[str] = Field(None, description="Optional reasoning content")

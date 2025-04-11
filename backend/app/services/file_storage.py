@@ -51,6 +51,10 @@ class FileStorageService:
         
         return True, None
     
+    def is_file_exists(self, file_path: str) -> bool:
+        """Check if a file exists in the storage."""
+        return os.path.exists(file_path)
+    
     async def save_file(self, file: UploadFile, message_id: uuid.UUID) -> dict:
         """
         Save an uploaded file to storage.
